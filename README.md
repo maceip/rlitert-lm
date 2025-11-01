@@ -1,6 +1,6 @@
 # litert-lm
 
-Rust wrapper around LiteRT-LM providing MCP and OpenAI-compatible interfaces. Auto-downloads platform binary, manages process pools, exposes model operations as tools.
+Rust wrapper around [LiteRT-LM](https://github.com/google-ai-edge/LiteRT-LM) providing MCP and OpenAI-compatible interfaces. Auto-downloads platform binary, manages process pools, exposes model operations as tools.
 
 ## Install
 

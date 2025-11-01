@@ -1,0 +1,47 @@
+[package]
+name = "litert-lm"
+version = "0.1.0"
+edition = "2021"
+description = "Rust wrapper for LiteRT-LM providing MCP and OpenAI-compatible interfaces with auto-download, process pools, and streaming"
+license = "MIT"
+homepage = "https://github.com/rpm/litert-lm"
+repository = "https://github.com/rpm/litert-lm"
+readme = "README.md"
+keywords = ["llm", "mcp", "litert", "inference", "ai"]
+categories = ["api-bindings", "command-line-utilities", "web-programming"]
+
+[[bin]]
+name = "litert-lm"
+path = "src/main.rs"
+
+[lib]
+name = "litert_lm"
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]
+tokio = { version = "1.42", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+reqwest = { version = "0.12", features = ["stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+axum = "0.7"
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+futures = "0.3"
+futures-util = "0.3"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace", "cors"] }
+dirs = "5.0"
+uuid = { version = "1.11", features = ["v4"] }
+rmcp = { version = "0.8", features = ["transport-io", "transport-sse-server", "transport-streamable-http-server"] }
+schemars = "1.0"
+hyper = { version = "1.0", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "service"] }
+http-body-util = "0.1"

@@ -46,8 +46,19 @@ async def main():
             await session.initialize()
             print("✓ Connected to litert-lm MCP server\n")
 
-            # Choose a small model for testing
+            # First, get list of all available models
+            print("→ Listing all available models...")
+            result = await session.call_tool("list_models", {"show_all": True})
+            all_models = result.content[0].text
+            print(f"  Available models:\n{all_models}\n")
+
+            # Choose a small model for testing (check if it's in the registry)
             model_to_download = "gemma3-1b"
+            if model_to_download not in all_models:
+                print(f"✗ Model {model_to_download} not found in registry")
+                print("  Available models listed above. Please update test to use one of those.")
+                sys.exit(1)
+
             resource_uri = f"litert://downloads/{model_to_download}"
 
             # Check if model is already downloaded

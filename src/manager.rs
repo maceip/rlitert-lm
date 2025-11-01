@@ -170,11 +170,47 @@ impl LitManager {
         Ok(())
     }
 
+    /// Pull a model without writing to stdout (for library/MCP usage)
+    pub async fn pull_quiet(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<String> {
+        let binary_path = self.ensure_binary().await?;
+        tracing::info!("Pulling model (quiet): {}", model);
+
+        let mut cmd = Command::new(&binary_path);
+        cmd.arg("pull").arg(model);
+
+        if let Some(alias_val) = alias {
+            cmd.arg("--alias").arg(alias_val);
+        }
+
+        if let Some(token) = hf_token {
+            cmd.arg("--hf_token").arg(token);
+        }
+
+        let output = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .context("Failed to pull model")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to pull model: {}", stderr);
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
     pub async fn remove(&self, model: &str) -> Result<()> {
         let binary_path = self.ensure_binary().await?;
         let output = self.run_lit_command(&binary_path, &["rm", model])?;
         println!("{}", output);
         Ok(())
+    }
+
+    /// Remove a model and return the output (for library/MCP usage)
+    pub async fn remove_quiet(&self, model: &str) -> Result<String> {
+        let binary_path = self.ensure_binary().await?;
+        self.run_lit_command(&binary_path, &["rm", model])
     }
 
     pub async fn run_interactive(&self, model: &str) -> Result<()> {

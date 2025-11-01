@@ -313,7 +313,7 @@ impl LiteRtMcpService {
 
         let result = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(
-                manager.pull(&model, alias.as_deref(), hf_token.as_deref())
+                manager.pull_quiet(&model, alias.as_deref(), hf_token.as_deref())
             )
         })
         .await
@@ -324,12 +324,12 @@ impl LiteRtMcpService {
         })?;
 
         match result {
-            Ok(_) => {
+            Ok(output) => {
                 progress_handle.abort();
                 self.update_progress(request.model.clone(), 100, DownloadStatus::Complete).await;
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Successfully pulled model: {}. Check litert://downloads/{} for progress.",
-                    request.model, request.model
+                    "Successfully pulled model: {}\n\n{}\n\nCheck litert://downloads/{} for progress.",
+                    request.model, output.trim(), request.model
                 ))]))
             }
             Err(e) => {
@@ -357,8 +357,8 @@ impl LiteRtMcpService {
         let manager = self.manager.clone();
         let model = request.model.clone();
 
-        tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(manager.remove(&model))
+        let output = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(manager.remove_quiet(&model))
         })
         .await
         .map_err(|e| McpError {
@@ -373,8 +373,8 @@ impl LiteRtMcpService {
         })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Successfully removed model: {}",
-            request.model
+            "Successfully removed model: {}\n\n{}",
+            request.model, output.trim()
         ))]))
     }
 

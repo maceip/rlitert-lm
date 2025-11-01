@@ -1,9 +1,9 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::sse::{Event, Sse},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::stream::StreamExt;
@@ -14,9 +14,12 @@ use tower_http::trace::TraceLayer;
 
 use crate::process::ProcessPool;
 
+use crate::manager::LitManager;
+
 #[derive(Clone)]
 pub struct AppState {
     pub pool: Arc<ProcessPool>,
+    pub manager: Arc<LitManager>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,9 +45,80 @@ fn default_temperature() -> f32 {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(untagged)]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: serde_json::Value },
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    #[serde(serialize_with = "serialize_content")]
+    pub content: MessageContent,
+}
+
+#[derive(Debug, Clone)]
+pub enum MessageContent {
+    String(String),
+    Parts(Vec<ContentPart>),
+}
+
+fn serialize_content<S>(content: &MessageContent, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match content {
+        MessageContent::String(s) => serializer.serialize_str(s),
+        MessageContent::Parts(parts) => parts.serialize(serializer),
+    }
+}
+
+impl<'de> Deserialize<'de> for Message {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct MessageHelper {
+            role: String,
+            content: serde_json::Value,
+        }
+
+        let helper = MessageHelper::deserialize(deserializer)?;
+        let content = match helper.content {
+            serde_json::Value::String(s) => MessageContent::String(s),
+            serde_json::Value::Array(arr) => {
+                let parts: Vec<ContentPart> = serde_json::from_value(serde_json::Value::Array(arr))
+                    .map_err(serde::de::Error::custom)?;
+                MessageContent::Parts(parts)
+            }
+            _ => return Err(serde::de::Error::custom("content must be string or array")),
+        };
+
+        Ok(Message {
+            role: helper.role,
+            content,
+        })
+    }
+}
+
+impl Message {
+    pub fn content_as_string(&self) -> String {
+        match &self.content {
+            MessageContent::String(s) => s.clone(),
+            MessageContent::Parts(parts) => {
+                parts
+                    .iter()
+                    .filter_map(|part| match part {
+                        ContentPart::Text { text } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -103,7 +177,7 @@ pub async fn chat_completions(
     let prompt = req
         .messages
         .iter()
-        .map(|m| format!("{}: {}", m.role, m.content))
+        .map(|m| format!("{}: {}", m.role, m.content_as_string()))
         .collect::<Vec<_>>()
         .join("\n");
 
@@ -132,7 +206,7 @@ pub async fn chat_completions(
             index: 0,
             message: Message {
                 role: "assistant".to_string(),
-                content: response_text,
+                content: MessageContent::String(response_text),
             },
             finish_reason: "stop".to_string(),
         }],
@@ -219,9 +293,118 @@ async fn chat_completions_stream(
     Sse::new(sse_stream).into_response()
 }
 
+// Models endpoint structures
+#[derive(Debug, Serialize)]
+pub struct ModelObject {
+    pub id: String,
+    pub object: &'static str,
+    pub created: u64,
+    pub owned_by: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelsListResponse {
+    pub object: &'static str,
+    pub data: Vec<ModelObject>,
+}
+
+// List all locally downloaded models
+pub async fn list_models(State(state): State<AppState>) -> Response {
+    // Get list of locally downloaded models
+    let models_output = match state.manager.list_models(false).await {
+        Ok(output) => output,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    // Parse the output to extract model names
+    let model_names: Vec<String> = models_output
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("Available")
+                && !trimmed.starts_with("Downloaded")
+                && !trimmed.starts_with("ALIAS")
+        })
+        .filter_map(|line| line.split_whitespace().next())
+        .map(|s| s.to_string())
+        .collect();
+
+    // Create model objects
+    let models: Vec<ModelObject> = model_names
+        .into_iter()
+        .map(|id| ModelObject {
+            id,
+            object: "model",
+            created: 1700000000, // Static timestamp
+            owned_by: "litert-lm",
+        })
+        .collect();
+
+    let response = ModelsListResponse {
+        object: "list",
+        data: models,
+    };
+
+    Json(response).into_response()
+}
+
+// Get a specific model by ID
+pub async fn get_model(
+    State(state): State<AppState>,
+    Path(model_id): Path<String>,
+) -> Response {
+    // Get list of locally downloaded models
+    let models_output = match state.manager.list_models(false).await {
+        Ok(output) => output,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    // Check if the requested model exists
+    let model_exists = models_output
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty()
+                && !trimmed.starts_with("Available")
+                && !trimmed.starts_with("Downloaded")
+                && !trimmed.starts_with("ALIAS")
+        })
+        .any(|line| line.trim() == model_id);
+
+    if !model_exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": {
+                    "message": format!("Model '{}' not found", model_id),
+                    "type": "invalid_request_error",
+                    "code": "model_not_found"
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    let model = ModelObject {
+        id: model_id,
+        object: "model",
+        created: 1700000000,
+        owned_by: "litert-lm",
+    };
+
+    Json(model).into_response()
+}
+
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/models", get(list_models))
+        .route("/v1/models/:model", get(get_model))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

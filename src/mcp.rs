@@ -57,7 +57,7 @@ pub struct ListModelsRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PullModelRequest {
-    #[schemars(description = "The model name or URL to download (e.g., 'gemma-2-2b-it' or Hugging Face URL)")]
+    #[schemars(description = "The model name or URL to download (e.g., 'gemma-3n-E4B' or Hugging Face URL)")]
     pub model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Alias to save the model as (only for URLs)")]

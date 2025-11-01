@@ -309,15 +309,16 @@ impl LitManager {
 
         // Default model for initialization - pool will be created on-demand
         let model = std::env::var("LITERT_MODEL")
-            .unwrap_or_else(|_| "gemma-2-2b-it".to_string());
+            .unwrap_or_else(|_| "gemma-3n-E4B".to_string());
 
         // Pre-initialize pool for default model
         let pool = self.get_pool(&model).await?;
         tracing::info!("Process pool initialized for model '{}' with {} instances", model, self.pool_size);
 
-        // Start server - AppState now holds the manager instead of a single pool
+        // Start server - AppState holds both pool and manager
         let app_state = AppState {
-            pool, // Keep the old interface for now
+            pool,
+            manager: Arc::new(self.clone()),
         };
         let app = create_router(app_state);
 

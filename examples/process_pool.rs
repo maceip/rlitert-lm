@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
             println!("[Request {}] Sending: {}", i + 1, p);
             let start = std::time::Instant::now();
 
-            match mgr.run_completion("gemma-2-2b-it", &p).await {
+            match mgr.run_completion("gemma-3n-E4B", &p).await {
                 Ok(response) => {
                     println!(
                         "[Request {}] Completed in {:?}: {}",

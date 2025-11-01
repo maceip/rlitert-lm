@@ -17,10 +17,10 @@
 //!     let manager = LitManager::new().await?;
 //!
 //!     // Pull a model
-//!     manager.pull("gemma-2-2b-it", None, None).await?;
+//!     manager.pull("gemma-3n-E4B", None, None).await?;
 //!
 //!     // Run completion
-//!     let response = manager.run_completion("gemma-2-2b-it", "Hello!").await?;
+//!     let response = manager.run_completion("gemma-3n-E4B", "Hello!").await?;
 //!     println!("{}", response);
 //!
 //!     Ok(())

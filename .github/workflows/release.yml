@@ -79,10 +79,12 @@ jobs:
         uses: anchore/sbom-action/download-syft@v0.15.0
 
       - name: Generate SBOM
+        shell: bash
         run: |
           syft target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -o spdx-json > ${{ matrix.asset_name }}.sbom.json
 
       - name: Sign binary and SBOM
+        shell: bash
         env:
           COSIGN_EXPERIMENTAL: 1
         run: |
@@ -94,6 +96,7 @@ jobs:
             --output-certificate ${{ matrix.asset_name }}.sbom.json.pem
 
       - name: Rename binary
+        shell: bash
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
 

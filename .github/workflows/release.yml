@@ -72,28 +72,29 @@ jobs:
         run: |
           strip target/${{ matrix.target }}/release/${{ matrix.artifact_name }} || true
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+      # Cosign and SBOM generation disabled - requires keyless signing setup
+      # - name: Install cosign
+      #   uses: sigstore/cosign-installer@v3
 
-      - name: Install syft
-        uses: anchore/sbom-action/download-syft@v0.15.0
+      # - name: Install syft
+      #   uses: anchore/sbom-action/download-syft@v0.15.0
 
-      - name: Generate SBOM
-        shell: bash
-        run: |
-          syft target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -o spdx-json > ${{ matrix.asset_name }}.sbom.json
+      # - name: Generate SBOM
+      #   shell: bash
+      #   run: |
+      #     syft target/${{ matrix.target }}/release/${{ matrix.artifact_name }} -o spdx-json > ${{ matrix.asset_name }}.sbom.json
 
-      - name: Sign binary and SBOM
-        shell: bash
-        env:
-          COSIGN_EXPERIMENTAL: 1
-        run: |
-          cosign sign-blob --yes target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
-            --output-signature ${{ matrix.asset_name }}.sig \
-            --output-certificate ${{ matrix.asset_name }}.pem
-          cosign sign-blob --yes ${{ matrix.asset_name }}.sbom.json \
-            --output-signature ${{ matrix.asset_name }}.sbom.json.sig \
-            --output-certificate ${{ matrix.asset_name }}.sbom.json.pem
+      # - name: Sign binary and SBOM
+      #   shell: bash
+      #   env:
+      #     COSIGN_EXPERIMENTAL: 1
+      #   run: |
+      #     cosign sign-blob --yes target/${{ matrix.target }}/release/${{ matrix.artifact_name }} \
+      #       --output-signature ${{ matrix.asset_name }}.sig \
+      #       --output-certificate ${{ matrix.asset_name }}.pem
+      #     cosign sign-blob --yes ${{ matrix.asset_name }}.sbom.json \
+      #       --output-signature ${{ matrix.asset_name }}.sbom.json.sig \
+      #       --output-certificate ${{ matrix.asset_name }}.sbom.json.pem
 
       - name: Rename binary
         shell: bash
@@ -104,13 +105,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset_name }}
-          path: |
-            ${{ matrix.asset_name }}
-            ${{ matrix.asset_name }}.sig
-            ${{ matrix.asset_name }}.pem
-            ${{ matrix.asset_name }}.sbom.json
-            ${{ matrix.asset_name }}.sbom.json.sig
-            ${{ matrix.asset_name }}.sbom.json.pem
+          path: ${{ matrix.asset_name }}
 
   release:
     name: Create Release

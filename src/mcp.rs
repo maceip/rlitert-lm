@@ -132,13 +132,24 @@ impl LiteRtMcpService {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut progress_map = HashMap::new();
 
-        // Parse the output and create download progress entries
-        // Each line is a model name
+        // Parse the output - it's column formatted with ALIAS and MODEL
+        // Skip header lines and extract the ALIAS (first column)
         for line in stdout.lines() {
-            let model = line.trim();
-            if !model.is_empty() && !model.starts_with("Available") && !model.starts_with("Downloaded") {
-                // Check if model is already downloaded by looking at downloaded models list
-                let is_downloaded = Self::check_if_downloaded(&binary_path, model).await?;
+            let trimmed = line.trim();
+
+            // Skip empty lines, headers, and separator lines
+            if trimmed.is_empty()
+                || trimmed.starts_with("Available")
+                || trimmed.starts_with("Downloaded")
+                || trimmed.starts_with("ALIAS") {
+                continue;
+            }
+
+            // Extract the first word/column (ALIAS)
+            let model = trimmed.split_whitespace().next();
+            if let Some(model_name) = model {
+                // Check if model is already downloaded
+                let is_downloaded = Self::check_if_downloaded(&binary_path, model_name).await?;
 
                 let status = if is_downloaded {
                     DownloadStatus::Complete
@@ -146,8 +157,8 @@ impl LiteRtMcpService {
                     DownloadStatus::Pending
                 };
 
-                progress_map.insert(model.to_string(), DownloadProgress {
-                    model: model.to_string(),
+                progress_map.insert(model_name.to_string(), DownloadProgress {
+                    model: model_name.to_string(),
                     progress: if is_downloaded { 100 } else { 0 },
                     status,
                 });

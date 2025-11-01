@@ -8,13 +8,36 @@
 
 use anyhow::Result;
 use dspy_rs::*;
+use dsrs_macros::Signature;
 use litert_lm::LitManager;
-use secrecy::SecretString;
 use tokio::time::{sleep, Duration};
+
+// Define signature for question-answering
+#[Signature]
+struct QuestionAnswer {
+    #[input]
+    question: String,
+
+    #[output]
+    answer: String,
+}
+
+// Define signature for math problems
+#[Signature]
+struct MathProblem {
+    #[input]
+    problem: String,
+
+    #[output]
+    reasoning: String,
+
+    #[output]
+    answer: String,
+}
 
 #[tokio::test]
 async fn test_dspy_custom_endpoint() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _ = tracing_subscriber::fmt::try_init();
 
     // Start our OpenAI-compatible server
     let manager = LitManager::new().await?;
@@ -33,7 +56,7 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
 
     let lm = LM::builder()
         .base_url(format!("http://localhost:{}/v1", port))
-        .api_key(SecretString::new("dummy-key".to_string()))
+        .api_key("dummy-key".to_string())
         .model("gemma-3n-E4B".to_string())
         .build()
         .await?;
@@ -47,8 +70,9 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
         "question": "input" => "What is 2+2?"
     };
 
-    // Create a simple predict module
-    let predictor = Predict::new("question -> answer");
+    // Create a simple predict module with the QuestionAnswer signature
+    let signature = QuestionAnswer::new();
+    let predictor = Predict::new(signature);
 
     match predictor.forward_with_config(prompt, std::sync::Arc::new(lm)).await {
         Ok(prediction) => {
@@ -71,7 +95,7 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
 
 #[tokio::test]
 async fn test_dspy_math_judge_pattern() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _ = tracing_subscriber::fmt::try_init();
 
     // Start our OpenAI-compatible server
     let manager = LitManager::new().await?;
@@ -88,7 +112,7 @@ async fn test_dspy_math_judge_pattern() -> Result<()> {
     // Create LM for the solver
     let solver_lm = LM::builder()
         .base_url(format!("http://localhost:{}/v1", port))
-        .api_key(SecretString::new("dummy-key".to_string()))
+        .api_key("dummy-key".to_string())
         .model("gemma-3n-E4B".to_string())
         .build()
         .await?;
@@ -101,8 +125,9 @@ async fn test_dspy_math_judge_pattern() -> Result<()> {
         "expected_answer": "output" => "5"
     };
 
-    // Create a predictor for solving math problems
-    let solver = Predict::new("problem -> reasoning, answer");
+    // Create a predictor for solving math problems with MathProblem signature
+    let math_signature = MathProblem::new();
+    let solver = Predict::new(math_signature);
 
     println!("\nSending math problem to solver...");
     match solver.forward_with_config(math_problem, std::sync::Arc::new(solver_lm)).await {

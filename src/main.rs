@@ -61,9 +61,18 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
-
     let cli = Cli::parse();
+
+    // Configure tracing based on command - for MCP stdio, write to stderr to avoid polluting stdout
+    let use_stderr = matches!(cli.command, Commands::Mcp { transport: McpTransport::Stdio, .. });
+
+    if use_stderr {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt::init();
+    }
     let manager = LitManager::new().await?;
 
     match cli.command {
@@ -86,15 +95,17 @@ async fn run_mcp_server(
     transport: McpTransport,
     port: u16,
 ) -> Result<()> {
-    use rmcp::ServiceExt;
+    use rmcp::{ServiceExt, transport::stdio};
 
     let service = LiteRtMcpService::new(manager).await?;
 
     match transport {
         McpTransport::Stdio => {
             tracing::info!("Starting MCP server with stdio transport");
-            let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
-            service.serve((stdin, stdout)).await?;
+            let server_handle = service.serve(stdio()).await?;
+            tracing::info!("Server started, waiting for connections...");
+            server_handle.waiting().await?;
+            tracing::info!("Server terminated");
         }
         McpTransport::Sse => {
             tracing::info!("Starting MCP server with SSE transport on port {}", port);

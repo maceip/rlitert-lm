@@ -131,6 +131,17 @@ impl LitManager {
         Ok(())
     }
 
+    /// List models and return the output as a String (library API)
+    pub async fn list_models(&self, show_all: bool) -> Result<String> {
+        let binary_path = self.ensure_binary().await?;
+        let args = if show_all {
+            vec!["list", "--show_all"]
+        } else {
+            vec!["list"]
+        };
+        self.run_lit_command(&binary_path, &args)
+    }
+
     pub async fn pull(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<()> {
         let binary_path = self.ensure_binary().await?;
         tracing::info!("Pulling model: {}", model);

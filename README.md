@@ -48,7 +48,7 @@ litert-lm serve --port 8080
 ```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model": "gemma-2-2b-it", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
+  -d '{"model": " gemma-3n-E4B", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'
 ```
 
 ## CLI
@@ -56,9 +56,9 @@ curl http://localhost:8080/v1/chat/completions \
 ```bash
 litert-lm list                    # Show downloaded models
 litert-lm list --show_all         # Show all available models
-litert-lm pull gemma-2-2b-it      # Download model
-litert-lm rm gemma-2-2b-it        # Remove model
-litert-lm run gemma-2-2b-it       # Interactive session
+litert-lm pull  gemma-3n-E4B      # Download model
+litert-lm rm  gemma-3n-E4B        # Remove model
+litert-lm run  gemma-3n-E4B       # Interactive session
 ```
 
 ## Library Usage
@@ -67,8 +67,8 @@ litert-lm run gemma-2-2b-it       # Interactive session
 use litert_lm::{LitManager, LiteRtMcpService};
 
 let manager = LitManager::new().await?;
-manager.pull("gemma-2-2b-it", None, None).await?;
-let response = manager.run_completion("gemma-2-2b-it", "Hello").await?;
+manager.pull(" gemma-3n-E4B", None, None).await?;
+let response = manager.run_completion(" gemma-3n-E4B", "Hello").await?;
 
 // MCP service with resource subscriptions
 let service = LiteRtMcpService::new(manager).await?;

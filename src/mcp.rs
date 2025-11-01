@@ -102,8 +102,10 @@ impl LiteRtMcpService {
     pub async fn new(manager: LitManager) -> Result<Self> {
         let manager_arc = Arc::new(manager);
 
+        tracing::info!("Initializing MCP service, loading model registry...");
         // Initialize download progress from model registry
         let download_progress = Self::initialize_model_registry(manager_arc.clone()).await?;
+        tracing::info!("Model registry loaded with {} models", download_progress.len());
 
         Ok(Self {
             manager: manager_arc,
@@ -433,7 +435,7 @@ impl LiteRtMcpService {
 impl ServerHandler for LiteRtMcpService {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
+            protocol_version: ProtocolVersion::V_2025_06_18,
             capabilities: ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()

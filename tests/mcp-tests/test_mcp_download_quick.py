@@ -73,11 +73,12 @@ async def main():
                 )
             )
 
-            # Poll for at least one progress update
+            # Poll for progress updates - wait for actual percentage change
             print("→ Waiting for progress updates...\n")
             got_update = False
+            got_percentage = False
 
-            for i in range(30):  # Try for 30 seconds
+            for i in range(15):  # Try for 15 seconds
                 await asyncio.sleep(1)
 
                 try:
@@ -86,13 +87,21 @@ async def main():
 
                     print(f"  Progress: {progress_data['progress']}% - Status: {progress_data['status']}")
 
-                    if progress_data['progress'] > 0 or progress_data['status'] != 'pending':
+                    # Check for status change
+                    if progress_data['status'] != 'pending':
                         got_update = True
-                        print("\n✓ Got progress update! Download is working.")
+
+                    # Check for percentage change
+                    if progress_data['progress'] > 0:
+                        got_percentage = True
+                        print("\n✓ Got percentage update! Progress tracking is working.")
                         break
 
                 except Exception as e:
                     print(f"  Waiting... ({i+1}s)")
+
+            if not got_percentage and got_update:
+                print("\n✓ Got status update (pending → downloading). Progress tracking is working.")
 
             # Cancel the download
             download_task.cancel()
@@ -101,8 +110,12 @@ async def main():
             except asyncio.CancelledError:
                 print("✓ Download cancelled\n")
 
-            if got_update:
+            if got_percentage or got_update:
                 print("✓ Download progress tracking test PASSED!")
+                if got_percentage:
+                    print("  - Received percentage updates")
+                if got_update:
+                    print("  - Received status updates")
             else:
                 print("✗ No progress updates received")
                 sys.exit(1)

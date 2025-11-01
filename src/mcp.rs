@@ -302,41 +302,48 @@ impl LiteRtMcpService {
         let alias = request.alias.clone();
         let hf_token = request.hf_token.clone();
 
-        // Track download progress
-        let progress_tracker = self.clone();
-        let progress_model = model.clone();
-
         // Initialize progress
         self.update_progress(model.clone(), 0, DownloadStatus::Pending).await;
 
-        // Spawn progress updates in background
-        let progress_handle = tokio::spawn(async move {
-            for pct in (0..=100).step_by(10) {
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-                let status = if pct < 100 {
+        // Use real progress tracking from lit binary with channel
+        let progress_tracker = self.clone();
+        let progress_model = model.clone();
+
+        // Create a channel to send progress updates
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Spawn task to handle progress updates
+        let update_task = tokio::spawn(async move {
+            while let Some(pct) = rx.recv().await {
+                let status = if pct >= 100.0 {
+                    DownloadStatus::Complete
+                } else if pct > 0.0 {
                     DownloadStatus::Downloading
                 } else {
-                    DownloadStatus::Complete
+                    DownloadStatus::Pending
                 };
-                progress_tracker.update_progress(progress_model.clone(), pct, status).await;
+                progress_tracker.update_progress(progress_model.clone(), pct as u8, status).await;
             }
         });
 
-        let result = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(
-                manager.pull_quiet(&model, alias.as_deref(), hf_token.as_deref())
-            )
-        })
-        .await
-        .map_err(|e| McpError {
-            code: ErrorCode(-32603),
-            message: Cow::from(format!("Task failed: {}", e)),
-            data: None,
-        })?;
+        let result = manager.pull_with_progress(
+            &model,
+            alias.as_deref(),
+            hf_token.as_deref(),
+            {
+                let tx = tx.clone();
+                move |pct| {
+                    let _ = tx.send(pct);
+                }
+            }
+        ).await;
+
+        // Clean up - drop the original sender to signal completion
+        drop(tx);
+        update_task.await.ok();
 
         match result {
             Ok(output) => {
-                progress_handle.abort();
                 self.update_progress(request.model.clone(), 100, DownloadStatus::Complete).await;
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Successfully pulled model: {}\n\n{}\n\nCheck litert://downloads/{} for progress.",
@@ -344,7 +351,6 @@ impl LiteRtMcpService {
                 ))]))
             }
             Err(e) => {
-                progress_handle.abort();
                 self.update_progress(
                     request.model.clone(),
                     0,

@@ -171,9 +171,19 @@ impl LitManager {
     }
 
     /// Pull a model without writing to stdout (for library/MCP usage)
-    pub async fn pull_quiet(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<String> {
+    /// Returns a callback-based progress tracker
+    pub async fn pull_with_progress<F>(
+        &self,
+        model: &str,
+        alias: Option<&str>,
+        hf_token: Option<&str>,
+        mut progress_callback: F,
+    ) -> Result<String>
+    where
+        F: FnMut(f32) + Send + 'static,
+    {
         let binary_path = self.ensure_binary().await?;
-        tracing::info!("Pulling model (quiet): {}", model);
+        tracing::info!("Pulling model with progress tracking: {}", model);
 
         let mut cmd = Command::new(&binary_path);
         cmd.arg("pull").arg(model);
@@ -186,18 +196,72 @@ impl LitManager {
             cmd.arg("--hf_token").arg(token);
         }
 
-        let output = cmd
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::process::Command as TokioCommand;
+
+        let mut child = TokioCommand::from(cmd)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
-            .context("Failed to pull model")?;
+            .spawn()
+            .context("Failed to spawn pull command")?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to pull model: {}", stderr);
+        let stdout = child.stdout.take().context("Failed to capture stdout")?;
+
+        // Read stdout byte by byte to handle carriage returns
+        use tokio::io::AsyncReadExt;
+        let mut stdout_reader = BufReader::new(stdout);
+        let mut buffer = vec![0u8; 4096];
+        let mut current_line = String::new();
+
+        loop {
+            match stdout_reader.read(&mut buffer).await {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    let chunk = String::from_utf8_lossy(&buffer[..n]);
+                    for ch in chunk.chars() {
+                        if ch == '\r' || ch == '\n' {
+                            if !current_line.is_empty() {
+                                tracing::debug!("Pull output line: {}", current_line);
+                                // Parse progress from lines like: "[                    ] 1.23%"
+                                if let Some(percent_str) = current_line.split(']').nth(1) {
+                                    if let Some(pct) = percent_str.trim().strip_suffix('%') {
+                                        if let Ok(progress) = pct.parse::<f32>() {
+                                            tracing::debug!("Parsed progress: {}%", progress);
+                                            progress_callback(progress);
+                                        }
+                                    }
+                                }
+                                current_line.clear();
+                            }
+                        } else {
+                            current_line.push(ch);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let stderr = child.stderr.take();
+        let status = child.wait().await.context("Failed to wait for pull")?;
+
+        if !status.success() {
+            if let Some(mut stderr_pipe) = stderr {
+                use tokio::io::AsyncReadExt;
+                let mut stderr_content = String::new();
+                stderr_pipe.read_to_string(&mut stderr_content).await.ok();
+                anyhow::bail!("Failed to pull model: {}", stderr_content);
+            } else {
+                anyhow::bail!("Failed to pull model");
+            }
+        }
+
+        Ok("Download completed".to_string())
+    }
+
+    /// Pull a model without writing to stdout (for library/MCP usage) - simple version
+    pub async fn pull_quiet(&self, model: &str, alias: Option<&str>, hf_token: Option<&str>) -> Result<String> {
+        self.pull_with_progress(model, alias, hf_token, |_| {}).await
     }
 
     pub async fn remove(&self, model: &str) -> Result<()> {

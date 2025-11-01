@@ -18,7 +18,7 @@ async fn main() -> Result<()> {
 
     // Pull a model (you can skip this if already downloaded)
     println!("\n=== Pulling Model ===");
-    match manager.pull("gemma-2-2b-it").await {
+    match manager.pull("gemma-3n-E4B", None, None).await {
         Ok(_) => println!("Model pulled successfully"),
         Err(e) => println!("Note: {}", e),
     }
@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     // Run a completion
     println!("\n=== Running Completion ===");
     let response = manager
-        .run_completion("gemma-2-2b-it", "What is the capital of France?")
+        .run_completion("gemma-3n-E4B", "What is the capital of France?")
         .await?;
 
     println!("Response: {}", response);

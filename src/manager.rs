@@ -196,7 +196,7 @@ impl LitManager {
             cmd.arg("--hf_token").arg(token);
         }
 
-        use tokio::io::{AsyncBufReadExt, BufReader};
+        use tokio::io::BufReader;
         use tokio::process::Command as TokioCommand;
 
         let mut child = TokioCommand::from(cmd)

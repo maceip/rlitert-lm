@@ -1,6 +1,6 @@
 [package]
 name = "litert-lm"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Rust wrapper for LiteRT-LM providing MCP and OpenAI-compatible interfaces with auto-download, process pools, and streaming"
 license = "MIT"

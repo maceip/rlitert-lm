@@ -22,6 +22,89 @@ pub struct AppState {
     pub manager: Arc<LitManager>,
 }
 
+/// Check if this is a DSpy-rs formatted prompt by looking for multiple specific patterns
+fn is_dspy_request(prompt: &str) -> bool {
+    // DSpy-rs has very specific patterns - we need at least 3 of these to be confident:
+    // 1. "Your input fields are:" or "Your output fields are:"
+    // 2. Field markers like "[[ ## field_name ## ]]"
+    // 3. "All interactions will be structured"
+    // 4. "Given the fields" instruction pattern
+
+    let has_field_declaration = prompt.contains("Your input fields are:")
+        || prompt.contains("Your output fields are:");
+    let has_field_markers = prompt.contains("[[ ## ") && prompt.contains(" ## ]]");
+    let has_structure_instruction = prompt.contains("All interactions will be structured");
+    let has_completion_marker = prompt.contains("[[ ## completed ## ]]")
+        || prompt.contains("ending with the marker for `completed`");
+
+    // Require at least 3 of these patterns to be present
+    let pattern_count = [
+        has_field_declaration,
+        has_field_markers,
+        has_structure_instruction,
+        has_completion_marker,
+    ].iter().filter(|&&x| x).count();
+
+    pattern_count >= 3
+}
+
+/// Extract output field names from DSpy-rs formatted prompt
+fn extract_dspy_output_fields(prompt: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+
+    // Look for "Your output fields are:" section
+    if let Some(output_section) = prompt.split("Your output fields are:").nth(1) {
+        // Extract field names from lines like "1. `field_name` (String)"
+        for line in output_section.lines() {
+            if let Some(field_start) = line.find('`') {
+                if let Some(field_end) = line[field_start + 1..].find('`') {
+                    let field_name = &line[field_start + 1..field_start + 1 + field_end];
+                    fields.push(field_name.to_string());
+                }
+            }
+            // Stop at the next section
+            if line.contains("All interactions will be structured") {
+                break;
+            }
+        }
+    }
+
+    fields
+}
+
+/// Extract the actual user question from DSpy-rs formatted prompt
+fn extract_dspy_question(prompt: &str) -> Option<String> {
+    // Find the user's actual question after the format template
+    // Look for pattern: user: [[ ## <field> ## ]]\n<actual_question>
+    if let Some(user_section) = prompt.split("user: [[ ## ").nth(1) {
+        if let Some(question_start) = user_section.find("## ]]\n") {
+            let question = &user_section[question_start + 6..];
+            return Some(question.trim().to_string());
+        }
+    }
+    None
+}
+
+/// Format LLM response with DSpy-rs field markers
+fn format_dspy_response(llm_output: &str, output_fields: &[String]) -> String {
+    let cleaned_output = llm_output.trim();
+
+    // For now, put the entire response in the first output field
+    // This is a simple heuristic - could be improved with better parsing
+    let mut formatted = String::new();
+
+    if let Some(first_field) = output_fields.first() {
+        formatted.push_str(&format!("[[ ## {} ## ]]\n", first_field));
+        formatted.push_str(cleaned_output);
+        formatted.push_str("\n\n");
+    }
+
+    // Add completion marker
+    formatted.push_str("[[ ## completed ## ]]\n");
+
+    formatted
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: String,
@@ -173,26 +256,79 @@ pub async fn chat_completions(
     State(state): State<AppState>,
     Json(req): Json<ChatCompletionRequest>,
 ) -> Response {
+    tracing::info!(
+        model = %req.model,
+        message_count = req.messages.len(),
+        stream = req.stream,
+        "Received chat completion request"
+    );
+
     // Build prompt from messages
-    let prompt = req
+    let mut prompt = req
         .messages
         .iter()
         .map(|m| format!("{}: {}", m.role, m.content_as_string()))
         .collect::<Vec<_>>()
         .join("\n");
 
+    tracing::debug!(
+        model = %req.model,
+        prompt_length = prompt.len(),
+        "Built prompt from messages"
+    );
+    tracing::trace!(prompt = %prompt, "Full prompt text");
+
     // Check if streaming is requested
     if req.stream {
+        tracing::debug!("Routing to streaming handler");
         return chat_completions_stream(state, req, prompt).await;
     }
 
+    // Detect if this is a DSpy-rs structured output request
+    let is_dspy = is_dspy_request(&prompt);
+    let output_fields = if is_dspy {
+        tracing::debug!("Detected DSpy-rs structured output request");
+        // Extract output field names from the system message
+        let fields = extract_dspy_output_fields(&prompt);
+        tracing::debug!(fields = ?fields, "Extracted DSpy-rs output fields");
+
+        // For small models, simplify by extracting just the actual question
+        if let Some(question) = extract_dspy_question(&prompt) {
+            tracing::debug!(original_length = prompt.len(), simplified_length = question.len(), "Simplified DSpy prompt for small model");
+            prompt = question;
+            tracing::trace!(simplified_prompt = %prompt, "Using simplified question");
+        } else {
+            tracing::warn!("Failed to extract question from DSpy prompt, using original");
+        }
+
+        fields
+    } else {
+        vec![]
+    };
+
     // Non-streaming response
-    let response_text = match state.pool.send_prompt(&prompt).await {
-        Ok(text) => text,
+    tracing::debug!("Sending prompt to process pool");
+    let mut response_text = match state.pool.send_prompt(&prompt).await {
+        Ok(text) => {
+            tracing::info!(
+                response_length = text.len(),
+                "Received completion from LLM"
+            );
+            tracing::trace!(response = %text, "LLM response text");
+            text
+        }
         Err(e) => {
+            tracing::error!(error = %e, "Failed to get completion from process pool");
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
+
+    // If DSpy-rs request, format the response with field markers
+    if is_dspy && !output_fields.is_empty() {
+        tracing::debug!(field_count = output_fields.len(), "Formatting response for DSpy-rs");
+        response_text = format_dspy_response(&response_text, &output_fields);
+        tracing::trace!(formatted_response = %response_text, "DSpy-rs formatted response");
+    }
 
     let response = ChatCompletionResponse {
         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
@@ -223,20 +359,56 @@ pub async fn chat_completions(
 async fn chat_completions_stream(
     state: AppState,
     req: ChatCompletionRequest,
-    prompt: String,
+    mut prompt: String,
 ) -> Response {
     let model_name = req.model.clone();
     let completion_id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
 
+    // Detect if this is a DSpy-rs structured output request and simplify for streaming
+    let is_dspy = is_dspy_request(&prompt);
+    let output_fields = if is_dspy {
+        tracing::debug!("Detected DSpy-rs structured output request in streaming mode");
+        let fields = extract_dspy_output_fields(&prompt);
+        tracing::debug!(fields = ?fields, "Extracted DSpy-rs output fields");
+
+        // Simplify by extracting just the actual question
+        if let Some(question) = extract_dspy_question(&prompt) {
+            tracing::debug!(original_length = prompt.len(), simplified_length = question.len(), "Simplified DSpy prompt for streaming");
+            prompt = question;
+            tracing::trace!(simplified_prompt = %prompt, "Using simplified question for streaming");
+        } else {
+            tracing::warn!("Failed to extract question from DSpy prompt in streaming mode, using original");
+        }
+
+        fields
+    } else {
+        vec![]
+    };
+
+    tracing::info!(
+        completion_id = %completion_id,
+        model = %model_name,
+        is_dspy = is_dspy,
+        "Starting streaming completion"
+    );
+
     // Get a process from the pool and stream
     let stream = match state.pool.get_process().await {
-        Ok(process) => match process.send_prompt_stream(&prompt).await {
-            Ok(s) => s,
-            Err(e) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        Ok(process) => {
+            tracing::debug!("Acquired process from pool for streaming");
+            match process.send_prompt_stream(&prompt).await {
+                Ok(s) => {
+                    tracing::debug!("Stream initialized successfully");
+                    s
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to initialize prompt stream");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                }
             }
-        },
+        }
         Err(e) => {
+            tracing::error!(error = %e, "Failed to acquire process from pool");
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
@@ -246,11 +418,64 @@ async fn chat_completions_stream(
         .unwrap()
         .as_secs();
 
-    let mut first_chunk = true;
+    // Create state for the stream transformation
+    struct StreamState {
+        dspy_header_sent: bool,
+        is_dspy: bool,
+        first_field: Option<String>,
+        completion_sent: bool,
+    }
 
-    let sse_stream = stream.map(move |chunk_result| {
+    let state = StreamState {
+        dspy_header_sent: false,
+        is_dspy: is_dspy,
+        first_field: output_fields.first().cloned(),
+        completion_sent: false,
+    };
+
+    use futures_util::stream;
+
+    // Transform the stream to add DSpy markers if needed
+    let transformed_stream = stream::unfold((stream, state), move |(mut s, mut state)| async move {
+        match s.next().await {
+            Some(Ok(mut token)) => {
+                // For DSpy requests, wrap the first chunk with field marker
+                if state.is_dspy && !state.dspy_header_sent {
+                    if let Some(ref first_field) = state.first_field {
+                        token = format!("[[ ## {} ## ]]\n{}", first_field, token);
+                        state.dspy_header_sent = true;
+                    }
+                }
+
+                Some((Ok(token), (s, state)))
+            }
+            Some(Err(e)) => Some((Err(e), (s, state))),
+            None => {
+                // Stream ended - if DSpy and haven't sent completion, send it now
+                if state.is_dspy && !state.completion_sent {
+                    state.completion_sent = true;
+                    Some((Ok("\n\n[[ ## completed ## ]]\n".to_string()), (s, state)))
+                } else {
+                    None
+                }
+            }
+        }
+    });
+
+    let mut first_chunk = true;
+    let mut chunk_sent_completion = false;
+    let sse_stream = transformed_stream.map(move |chunk_result| {
         let event = match chunk_result {
             Ok(token) => {
+                // Check if this is a completion marker chunk (before moving token)
+                let is_completion = token.contains("[[ ## completed ## ]]");
+                let finish_reason = if is_completion && !chunk_sent_completion {
+                    chunk_sent_completion = true;
+                    Some("stop".to_string())
+                } else {
+                    None
+                };
+
                 // First chunk includes the role
                 let delta = if first_chunk {
                     first_chunk = false;
@@ -273,7 +498,7 @@ async fn chat_completions_stream(
                     choices: vec![ChoiceChunk {
                         index: 0,
                         delta,
-                        finish_reason: None,
+                        finish_reason,
                     }],
                 };
 
@@ -310,10 +535,16 @@ pub struct ModelsListResponse {
 
 // List all locally downloaded models
 pub async fn list_models(State(state): State<AppState>) -> Response {
+    tracing::debug!("Listing locally downloaded models");
+
     // Get list of locally downloaded models
     let models_output = match state.manager.list_models(false).await {
-        Ok(output) => output,
+        Ok(output) => {
+            tracing::debug!("Successfully retrieved model list");
+            output
+        }
         Err(e) => {
+            tracing::error!(error = %e, "Failed to list models");
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
@@ -356,10 +587,13 @@ pub async fn get_model(
     State(state): State<AppState>,
     Path(model_id): Path<String>,
 ) -> Response {
+    tracing::debug!(model_id = %model_id, "Looking up specific model");
+
     // Get list of locally downloaded models
     let models_output = match state.manager.list_models(false).await {
         Ok(output) => output,
         Err(e) => {
+            tracing::error!(error = %e, model_id = %model_id, "Failed to list models");
             return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
     };
@@ -377,6 +611,7 @@ pub async fn get_model(
         .any(|line| line.trim() == model_id);
 
     if !model_exists {
+        tracing::warn!(model_id = %model_id, "Model not found");
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -390,6 +625,7 @@ pub async fn get_model(
             .into_response();
     }
 
+    tracing::debug!(model_id = %model_id, "Model found");
     let model = ModelObject {
         id: model_id,
         object: "model",

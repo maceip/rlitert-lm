@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
 
     // List available models
     println!("=== Listing Models ===");
-    manager.list().await?;
+    manager.list(false).await?;
 
     // Pull a model (you can skip this if already downloaded)
     println!("\n=== Pulling Model ===");

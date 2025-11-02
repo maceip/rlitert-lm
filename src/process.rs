@@ -196,16 +196,20 @@ impl LitProcess {
 
         match cmd {
             ProcessCommand::Run { prompt, response_tx } => {
+                tracing::trace!("Writing prompt to process stdin");
                 // 1. Write prompt to the process's stdin
                 if let Err(e) = stdin.write_all(prompt.as_bytes()).await {
+                    tracing::error!(error = %e, "Failed to write prompt to stdin");
                     let _ = response_tx.send(Err(e.into())).await;
                     return;
                 }
                 if let Err(e) = stdin.write_all(b"\n").await {
+                    tracing::error!(error = %e, "Failed to write newline to stdin");
                     let _ = response_tx.send(Err(e.into())).await;
                     return;
                 }
                 if let Err(e) = stdin.flush().await {
+                    tracing::error!(error = %e, "Failed to flush stdin");
                     let _ = response_tx.send(Err(e.into())).await;
                     return;
                 }
@@ -214,10 +218,12 @@ impl LitProcess {
                 buffer.clear();
                 let mut last_chunk = String::new();
 
+                tracing::trace!("Reading response from process stdout");
                 loop {
                     match stdout.read(temp_buf).await {
                         Ok(0) => {
                             // EOF - process died
+                            tracing::error!("Process stdout closed unexpectedly");
                             let _ = response_tx.send(Err(anyhow::anyhow!("Process stdout closed"))).await;
                             break;
                         }
@@ -227,12 +233,14 @@ impl LitProcess {
 
                             // Check if we've reached the end marker ">>>"
                             if text.ends_with(">>>") || text.contains("\n>>>") {
+                                tracing::trace!("Received end marker, finalizing response");
                                 // Send the final chunk (without the >>>)
                                 let final_text = text.trim_end_matches(">>>").trim_end_matches('\n');
                                 if final_text.len() > last_chunk.len() {
                                     let new_content = &final_text[last_chunk.len()..];
                                     if !new_content.is_empty() {
                                         if response_tx.send(Ok(new_content.to_string())).await.is_err() {
+                                            tracing::debug!("Response channel closed by receiver");
                                             break;
                                         }
                                     }
@@ -253,6 +261,7 @@ impl LitProcess {
                             }
                         }
                         Err(e) => {
+                            tracing::error!(error = %e, "Error reading from process stdout");
                             let _ = response_tx.send(Err(e.into())).await;
                             break;
                         }
@@ -268,6 +277,8 @@ impl LitProcess {
         &self,
         prompt: &str,
     ) -> Result<impl Stream<Item = Result<String>>> {
+        tracing::debug!(prompt_length = prompt.len(), "Creating prompt stream");
+
         // 1. Create a new, unique channel for *this* request's response
         let (response_tx, response_rx) = mpsc::channel(100); // Token buffer
 
@@ -280,9 +291,11 @@ impl LitProcess {
         // 3. Send the command to the process loop
         self.command_tx.send(cmd).await.map_err(|e| {
             // Process loop died
+            tracing::error!(error = %e, "Process command channel closed");
             anyhow::anyhow!("Failed to send command to process: {}", e)
         })?;
 
+        tracing::debug!("Command sent to process, returning stream");
         // 4. Return the receiver wrapped in a stream
         Ok(ReceiverStream::new(response_rx))
     }
@@ -332,10 +345,20 @@ impl ProcessPool {
 
     pub async fn initialize(&mut self) -> Result<()> {
         let pool_size = self.processes.capacity();
-        for _ in 0..pool_size {
+        tracing::info!(
+            pool_size = pool_size,
+            model = %self.model,
+            "Initializing process pool"
+        );
+
+        for i in 0..pool_size {
+            tracing::debug!(process_index = i, "Spawning process");
             let process = LitProcess::spawn(self.binary_path.clone(), self.model.clone()).await?;
             self.processes.push(Arc::new(process));
+            tracing::debug!(process_index = i, "Process spawned successfully");
         }
+
+        tracing::info!(pool_size = pool_size, "Process pool initialized successfully");
         Ok(())
     }
 
@@ -346,10 +369,16 @@ impl ProcessPool {
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
         if self.processes.is_empty() {
+            tracing::error!("Process pool is empty or not initialized");
             anyhow::bail!("Process pool not initialized")
         }
 
         let idx = COUNTER.fetch_add(1, Ordering::Relaxed) % self.processes.len();
+        tracing::trace!(
+            process_index = idx,
+            pool_size = self.processes.len(),
+            "Selected process from pool"
+        );
         Ok(self.processes[idx].clone())
     }
 

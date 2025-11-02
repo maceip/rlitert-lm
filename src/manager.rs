@@ -39,16 +39,21 @@ impl LitManager {
     async fn ensure_binary(&self) -> Result<PathBuf> {
         let read_lock = self.binary_path.read().await;
         if let Some(path) = read_lock.as_ref() {
+            tracing::trace!(path = %path.display(), "Binary path already cached");
             return Ok(path.clone());
         }
         drop(read_lock);
 
+        tracing::debug!("Binary path not cached, acquiring write lock");
         let mut write_lock = self.binary_path.write().await;
         if let Some(path) = write_lock.as_ref() {
+            tracing::trace!(path = %path.display(), "Binary path set by another task");
             return Ok(path.clone());
         }
 
+        tracing::info!("Ensuring binary is available");
         let path = self.binary_manager.ensure_binary().await?;
+        tracing::info!(path = %path.display(), "Binary path obtained");
         *write_lock = Some(path.clone());
         Ok(path)
     }
@@ -64,8 +69,11 @@ impl LitManager {
 
         // 2. Check if a pool for this model already exists
         if let Some(pool) = pools.get(model) {
+            tracing::debug!(model = %model, "Using existing process pool");
             return Ok(pool.clone());
         }
+
+        tracing::info!(model = %model, pool_size = self.pool_size, "Creating new process pool");
 
         // 3. If not, create, initialize, and insert it
         let binary_path = self.ensure_binary().await?;
@@ -79,15 +87,19 @@ impl LitManager {
 
         let pool_arc = Arc::new(new_pool);
         pools.insert(model.to_string(), pool_arc.clone());
+        tracing::info!(model = %model, "Process pool created and initialized");
         Ok(pool_arc)
     }
 
     pub async fn run_completion(&self, model: &str, prompt: &str) -> Result<String> {
+        tracing::debug!(model = %model, prompt_length = prompt.len(), "Running completion");
+
         // Get the correct pool for the requested model
         let pool = self.get_pool(model).await?;
 
         // Use the pool
         let response = pool.send_prompt(prompt).await?;
+        tracing::debug!(model = %model, response_length = response.len(), "Completion finished");
         Ok(response)
     }
 
@@ -104,6 +116,12 @@ impl LitManager {
     }
 
     fn run_lit_command(&self, binary_path: &PathBuf, args: &[&str]) -> Result<String> {
+        tracing::debug!(
+            binary = %binary_path.display(),
+            args = ?args,
+            "Running lit command"
+        );
+
         let output = Command::new(binary_path)
             .args(args)
             .stdout(Stdio::piped())
@@ -113,9 +131,15 @@ impl LitManager {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(
+                args = ?args,
+                stderr = %stderr,
+                "Lit command failed"
+            );
             anyhow::bail!("Command failed: {}", stderr);
         }
 
+        tracing::debug!(args = ?args, "Lit command succeeded");
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
@@ -183,7 +207,12 @@ impl LitManager {
         F: FnMut(f32) + Send + 'static,
     {
         let binary_path = self.ensure_binary().await?;
-        tracing::info!("Pulling model with progress tracking: {}", model);
+        tracing::info!(
+            model = %model,
+            alias = ?alias,
+            has_token = hf_token.is_some(),
+            "Pulling model with progress tracking"
+        );
 
         let mut cmd = Command::new(&binary_path);
         cmd.arg("pull").arg(model);
@@ -250,12 +279,19 @@ impl LitManager {
                 use tokio::io::AsyncReadExt;
                 let mut stderr_content = String::new();
                 stderr_pipe.read_to_string(&mut stderr_content).await.ok();
+                tracing::error!(
+                    model = %model,
+                    stderr = %stderr_content,
+                    "Model pull failed"
+                );
                 anyhow::bail!("Failed to pull model: {}", stderr_content);
             } else {
+                tracing::error!(model = %model, "Model pull failed (no stderr)");
                 anyhow::bail!("Failed to pull model");
             }
         }
 
+        tracing::info!(model = %model, "Model pull completed successfully");
         Ok("Download completed".to_string())
     }
 

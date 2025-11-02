@@ -74,10 +74,35 @@ async fn test_dspy_custom_endpoint() -> Result<()> {
     let signature = QuestionAnswer::new();
     let predictor = Predict::new(signature);
 
-    match predictor.forward_with_config(prompt, std::sync::Arc::new(lm)).await {
+    match predictor.forward_with_config(prompt.clone(), std::sync::Arc::new(lm)).await {
         Ok(prediction) => {
             println!("✓ DSpy-rs successfully got response from our server");
-            println!("Response: {:?}", prediction);
+            println!("Full Prediction: {:?}", prediction);
+            println!("Answer field: {:?}", prediction.get("answer", None));
+
+            // Also test directly with async-openai to compare
+            use async_openai::{Client, config::OpenAIConfig, types::*};
+            let config = OpenAIConfig::new()
+                .with_api_base(format!("http://localhost:{}/v1", port))
+                .with_api_key("dummy-key");
+            let client = Client::with_config(config);
+
+            let direct_request = CreateChatCompletionRequestArgs::default()
+                .model("gemma-3n-E4B")
+                .messages(vec![ChatCompletionRequestMessage::User(
+                    ChatCompletionRequestUserMessageArgs::default()
+                        .content("What is 2+2?")
+                        .build()?,
+                )])
+                .build()?;
+
+            match client.chat().create(direct_request).await {
+                Ok(resp) => {
+                    println!("\nDirect async-openai response:");
+                    println!("Content: {:?}", resp.choices[0].message.content);
+                }
+                Err(e) => println!("Direct call error: {}", e),
+            }
         }
         Err(e) => {
             eprintln!("✗ DSpy-rs failed to get response: {}", e);

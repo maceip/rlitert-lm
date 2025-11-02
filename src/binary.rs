@@ -18,7 +18,9 @@ impl BinaryManager {
             .context("Failed to get cache directory")?
             .join("litert-lm");
 
+        tracing::debug!(cache_dir = %cache_dir.display(), "Setting up binary manager");
         fs::create_dir_all(&cache_dir)?;
+        tracing::trace!(cache_dir = %cache_dir.display(), "Cache directory ready");
 
         Ok(Self { cache_dir })
     }
@@ -27,20 +29,23 @@ impl BinaryManager {
         let binary_path = self.get_binary_path();
 
         if binary_path.exists() {
+            tracing::debug!(path = %binary_path.display(), "Binary already exists");
             return Ok(binary_path);
         }
 
-        tracing::info!("Downloading LiteRT binary...");
+        tracing::info!(path = %binary_path.display(), "Binary not found, downloading...");
         self.download_binary(&binary_path).await?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            tracing::debug!("Setting executable permissions");
             let mut perms = fs::metadata(&binary_path)?.permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&binary_path, perms)?;
         }
 
+        tracing::info!(path = %binary_path.display(), "Binary ready");
         Ok(binary_path)
     }
 
@@ -63,22 +68,34 @@ impl BinaryManager {
         let filename = self.get_binary_filename();
         let url = format!("{}/{}/{}", BASE_URL, VERSION, filename);
 
-        tracing::info!("Downloading from: {}", url);
+        tracing::info!(url = %url, "Downloading binary");
 
         let response = reqwest::get(&url)
             .await
             .context("Failed to download binary")?;
 
         if !response.status().is_success() {
+            tracing::error!(
+                url = %url,
+                status = %response.status(),
+                "Download request failed"
+            );
             anyhow::bail!("Failed to download binary: HTTP {}", response.status());
         }
 
+        tracing::debug!("Download response received, reading bytes");
         let bytes = response.bytes().await?;
+        tracing::debug!(size_bytes = bytes.len(), "Binary downloaded, writing to disk");
+
         let mut file = tokio::fs::File::create(dest).await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
 
-        tracing::info!("Binary downloaded successfully");
+        tracing::info!(
+            path = %dest.display(),
+            size_bytes = bytes.len(),
+            "Binary downloaded successfully"
+        );
         Ok(())
     }
 }

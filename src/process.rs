@@ -4,7 +4,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::Stream;
 
@@ -66,6 +66,9 @@ impl LitProcess {
 
         let (command_tx, mut command_rx) = mpsc::channel::<ProcessCommand>(32);
 
+        // Channel to signal when initialization is complete
+        let (init_tx, init_rx) = oneshot::channel::<Result<()>>();
+
         // Spawn a task to log stderr
         tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
@@ -81,6 +84,7 @@ impl LitProcess {
 
         // Spawn the long-running task that owns the process
         let child_handle = tokio::spawn(async move {
+            let mut init_tx = Some(init_tx);
             use tokio::io::AsyncReadExt;
 
             let mut stdout = stdout;
@@ -143,9 +147,17 @@ impl LitProcess {
             match init_result {
                 Ok(Ok(())) => {
                     tracing::info!("Model initialization complete, processing {} buffered commands", pending_commands.len());
+                    // Signal successful initialization
+                    if let Some(tx) = init_tx.take() {
+                        let _ = tx.send(Ok(()));
+                    }
                 }
                 Ok(Err(e)) => {
                     tracing::error!("Initialization failed: {}", e);
+                    // Signal initialization failure
+                    if let Some(tx) = init_tx.take() {
+                        let _ = tx.send(Err(anyhow::anyhow!("Initialization failed: {}", e)));
+                    }
                     // Drain buffered commands with error
                     for cmd in pending_commands {
                         let ProcessCommand::Run { response_tx, .. } = cmd;
@@ -156,6 +168,10 @@ impl LitProcess {
                 }
                 Err(_) => {
                     tracing::error!("Initialization timed out after 2 minutes");
+                    // Signal initialization timeout
+                    if let Some(tx) = init_tx.take() {
+                        let _ = tx.send(Err(anyhow::anyhow!("Process initialization timed out")));
+                    }
                     for cmd in pending_commands {
                         let ProcessCommand::Run { response_tx, .. } = cmd;
                         let _ = response_tx.send(Err(anyhow::anyhow!("Process initialization timed out"))).await;
@@ -178,6 +194,26 @@ impl LitProcess {
             // Cleanup: kill child process when command loop exits
             let _ = child.kill().await;
         });
+
+        // Wait for initialization to complete before returning
+        let init_timeout = tokio::time::Duration::from_secs(120); // Same as process init timeout
+        match tokio::time::timeout(init_timeout, init_rx).await {
+            Ok(Ok(Ok(()))) => {
+                tracing::info!("Process initialized successfully");
+            }
+            Ok(Ok(Err(e))) => {
+                tracing::error!("Process initialization failed: {}", e);
+                return Err(e);
+            }
+            Ok(Err(_)) => {
+                tracing::error!("Initialization channel closed unexpectedly");
+                anyhow::bail!("Process initialization channel closed unexpectedly");
+            }
+            Err(_) => {
+                tracing::error!("Process initialization timed out");
+                anyhow::bail!("Process initialization timed out after {:?}", init_timeout);
+            }
+        }
 
         Ok(Self {
             command_tx,
